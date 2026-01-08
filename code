@@ -1,0 +1,424 @@
+##设置工作路径
+getwd()
+library(readr)
+mydata <- read_csv("1818-预测变量0309.csv")
+mydata<-na.omit(mydata)
+
+# 将分类变量转换为factor
+for(i in c(3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,31,32,33,34)){
+  mydata[[i]] <- factor(mydata[[i]])
+}
+
+#mydata$hGDM=factor(mydata$hGDM,levels = c(0,1,2),labels = c("primipara","Multiparous without GDM","Multiparous with GDM"))
+#mydata$MDM=factor(mydata$MDM,levels = c(0,1),labels = c("no","yes"))
+#mydata$TG_HDL12.5=factor(mydata$TG_HDL12.5,levels = c(0,1),labels = c("no","yes"))
+#mydata$Prebmi24=factor(mydata$Prebmi24,levels = c(0,1),labels = c("no","yes"))
+
+
+# 设置随机，拆分训练和验证
+set.seed(123)
+mydata$split <- sample(c("Train", "Validation"), size = nrow(mydata), replace = TRUE, prob = c(0.7, 0.3))
+
+names(mydata)
+str(mydata)
+summary(mydata)
+
+##拆分训练集和验证集
+library(dplyr)
+library(caret)
+
+# 加载必要包
+library(flextable)   # 生成三线表
+library(dplyr)       # 数据处理
+library(broom)       # 整理检验结果
+library(effectsize)  # 计算效应量
+library(purrr)       # 函数式编程
+
+
+# 分割数据集
+#拆分
+dev <- mydata %>% filter(split == "Train")
+vad <- mydata %>% filter(split == "Validation")
+
+dev <- dev[, -35]
+vad <- vad[, -35]
+
+write.csv(dev, "训练集.csv")
+write.csv(vad, "验证集.csv")
+
+
+# 创建结果存储框架
+results <- tibble(
+  Variable = character(),
+  Type = character(),
+  dev = character(),
+  vadation = character(),
+  Test = character(),
+  p_value = numeric(),
+  Effect_Size = numeric()
+)
+
+# 定义统计检验函数
+analyze_variable <- function(var, df) {
+  # 判断变量类型
+  if (is.numeric(df[[var]])) {
+    # 连续型变量处理
+    dev_stats <- sprintf("%.1f±%.1f", 
+                         mean(dev[[var]], na.rm = TRUE),
+                         sd(dev[[var]], na.rm = TRUE))
+    vad_stats <- sprintf("%.1f±%.1f", 
+                         mean(vad[[var]], na.rm = TRUE),
+                         sd(vad[[var]], na.rm = TRUE))
+    
+    # 正态性检验
+    norm_test <- shapiro.test(df[[var]])
+    if(norm_test$p.value < 2.23e-22) {
+      test <- wilcox.test(dev[[var]], vad[[var]])
+      es <- rank_biserial(dev[[var]], vad[[var]])$r_rank_biserial
+      test_name <- "Wilcoxon"
+    } else {
+      test <- t.test(dev[[var]], vad[[var]])
+      es <- cohens_d(dev[[var]], vad[[var]])$Cohens_d
+      test_name <- "t-test"
+    }
+    
+    # 返回结果
+    tibble(
+      Variable = var,
+      Type = "Continuous",
+      dev = dev_stats,
+      vadation = vad_stats,
+      Test = test_name,
+      p_value = test$p.value,
+      Effect_Size = es
+    )
+    
+  } else {
+    # 分类型变量处理
+    # 构建列联表（修正关键错误）
+    tbl <- table(df$split, df[[var]])  # 正确构建二维列联表
+    
+    # 计算频数百分比
+    format_percent <- function(x) {
+      counts <- table(x)
+      paste0(names(counts), ": ", counts, " (", 
+             round(prop.table(counts)*100, 1), "%)", 
+             collapse = "\n")
+    }
+    
+    dev_stats <- format_percent(dev[[var]])
+    vad_stats <- format_percent(vad[[var]])
+    
+    # 选择检验方法
+    if(any(tbl < 5)) {
+      test <- fisher.test(tbl, simulate.p.value = TRUE)
+      test_name <- "Fisher"
+    } else {
+      test <- chisq.test(tbl)
+      test_name <- "Chi-square"
+    }
+    
+    # 计算效应量
+    es <- cramers_v(tbl)$Cramers_V
+    
+    # 返回结果
+    tibble(
+      Variable = var,
+      Type = "Categorical",
+      dev = dev_stats,
+      vadation = vad_stats,
+      Test = test_name,
+      p_value = test$p.value,
+      Effect_Size = es
+    )
+  }
+}
+
+# 对每个变量进行分析
+variables <- c("Region","Edu0","Ethnichan","IVF","PCOS","Thyroid","Autoimmune","Hypertension","FHBP","MHBP","MDM","FDM","Gravida","Prebmi24","TG_HDL12.5","Age","SBP","DBP","VT1","TyG1","Hb1","SF1","HbA1C1","FBG1","TC1","TG1","HDL1","LDL1","hGDM","hMacrosomia","hAPO","Parity")
+results <- map_dfr(variables, analyze_variable, df = mydata)
+
+##看正态性结果
+# 加载必要的包
+#library(dplyr)
+#library(purrr)
+#library(ggplot2)
+# 假设数据框为 df，仅选择数值型列
+#df_numeric <- mydata %>% keep(is.numeric)
+
+# 对每个变量执行Shapiro-Wilk检验并整理结果
+##normality_tests <- df_numeric %>%
+#  map(~ shapiro.test(.x)) %>%
+#  map_dfr(tidy, .id = "Variable")
+
+# 查看结果
+#print(normality_tests)
+
+
+# 生成三线表
+results %>%
+  flextable() %>%
+  set_header_labels(
+    Variable = "变量",
+    Type = "类型",
+    dev = "训练集",
+    vadation = "验证集",
+    Test = "检验方法",
+    p_value = "P值",
+    Effect_Size = "效应量"
+  ) %>%
+  colformat_num(j = 6:7, digits = 3) %>%
+  theme_booktabs() %>%               # 三线表样式
+  autofit() %>%                      # 自动调整列宽
+  align(align = "center") %>%        # 居中对齐
+  bold(part = "header") %>%          # 标题加粗
+  set_table_properties(width = 1)    # 表格宽度铺满页面
+
+##导出结果
+write.csv(results, "训练集验证集三线表.csv")
+
+
+##二、模型构建
+
+##2.1单因素Logistic回归（批量执行）
+uni_glm_model<-function(x){
+  FML<-as.formula(paste0("Group~",x))  #您以后就改绿色的变量即可
+  glm1<-glm(FML,data = dev,family = binomial)
+  glm2<-summary(glm1)
+  
+  #
+  OR<-round(exp(coef(glm1)),2)
+  SE<-round(glm2$coefficients[,2],3)  
+  CI2.5<-round(exp(coef(glm1)-1.96*SE),2)
+  CI97.5<-round(exp(coef(glm1)+1.96*SE),2)
+  CI<-paste0(CI2.5,'-',CI97.5)
+  B<-round(glm2$coefficients[,1],3)
+  Z<-round(glm2$coefficients[,3],3)
+  P<-round(glm2$coefficients[,4],3)
+  
+  #??????Z?o???I?w???????????????y
+  uni_glm_model<-data.frame('characteristics'=x,
+                            'B'=B,
+                            'SE'=SE,
+                            'OR'=OR,
+                            'CI'=CI,
+                            'Z' =Z,
+                            'P'=P)[-1,]
+  
+  return(uni_glm_model)
+}
+
+#计算我们所要的指标
+variable.names<-colnames(dev)[c(3:34)]  #要核实这里的X对应的列是否对
+variable.names
+
+#运行上面自定义批量执行函数
+uni_glm<-lapply(variable.names,uni_glm_model)
+uni_glm
+
+
+library(plyr)
+
+#生成单变量分析的综合结果
+uni_glm<-ldply(uni_glm,data.frame)
+
+#看下结果是啥样子的
+uni_glm
+
+#将单因素分析的结果，写到csv中.
+write.csv(uni_glm, "单因素分析P值结果.csv")
+
+#将P<0.1的结果挑选出来（如需）
+uni_glm1 <- uni_glm[uni_glm$P<= 0.1,]
+uni_glm1
+write.csv(uni_glm1, "p10-dev.csv")
+#write.csv(uni_glm2, "p10.csv")
+
+
+#将P<0.05的结果挑选出来（如需）
+uni_glm2 <- uni_glm[uni_glm$P<= 0.05,]
+uni_glm2
+write.csv(uni_glm2, "p5-dev.csv")
+#write.csv(uni_glm2, "p10.csv")
+
+
+
+
+
+##lasso方法1-学习别人的
+
+#Lasso回归筛选变量
+
+library(tidymodels)
+library(corrplot)
+library(glmnet)
+
+x= as.matrix(dev[,3:34])
+y= as.matrix(dev[,1])
+
+set.seed(123) 
+lasso_model <- glmnet(x, # 包含自变量的矩阵
+                      y, # 因变量向量
+                      family = "binomial",# 表示因变量为二元分类变量
+                      alpha = 1) #这里alpha=1为LASSO回归，如果等于0就是岭回归。
+#可视化系数路径图
+plot(lasso_model,
+     xvar = "lambda",
+     label = F)# 
+#交叉验证选择合适的Lambda
+set.seed(123)
+cv_model <- cv.glmnet(x, y, family = "binomial",alpha = 1,nfolds = 10)
+#可视化
+plot(cv_model)
+# 根据交叉验证结果，选择lambda值
+#我们可以选择平均误差最小的那个λ，即lambda.min
+lambda_min <- cv_model$lambda.min
+lambda_min
+lambda_1se <- cv_model$lambda.1se
+lambda_1se
+# 查看最优lambda值，一般都是取lambda.min
+best_lambda <- cv_model$lambda.1se
+print(best_lambda)
+# 提取系数
+coefficients <- coef(cv_model, s = best_lambda)
+print(coefficients)
+###结果Group ~   MDM+Prebmi24 +TG_HDL12.5+ Hb1+  FBG1+HbA1C1+LDL1+hGDM+Age
+
+
+##直接lasso所有变量画图
+coefficients <- as.matrix(coefficients)  # 将系数转换为矩阵
+coefficients <- coefficients[-1, , drop = FALSE]  # 去除截距项
+coef_values <- abs(coefficients)  # 取绝对值
+feature_names <- rownames(coefficients)  # 获取特征名称
+sorted_indices <- order(coef_values, decreasing = TRUE)
+sorted_coef_values <- coef_values[sorted_indices]
+sorted_feature_names <- feature_names[sorted_indices]
+
+print(sorted_coef_values)
+
+
+# 查看非零系数的变量
+selected_features <- rownames(coefficients)[which(coefficients != 0)]
+print(selected_features)
+
+non_zero_indices <- which(coefficients != 0)
+non_zero_coefficients <- coefficients[non_zero_indices]
+selected_features <- rownames(coefficients)[non_zero_indices]
+
+# 打印非零系数和对应特征
+print("Selected features and their coefficients:")
+importance=data.frame(Feature = selected_features, Coefficient = non_zero_coefficients)
+print(importance)
+
+
+library(ggplot2)
+
+# 绘制变量重要性条形图
+ggplot(importance, aes(x = reorder(selected_features, non_zero_coefficients), y = non_zero_coefficients)) +
+  geom_col(fill = "cornflowerblue") +
+  coord_flip() +
+  labs(title = "Importance ranking of variables by Lasso regression", x = "variables", y = "Absolute value of the coefficient") +
+  theme_minimal()
+
+
+
+
+
+##先lasso后多
+# 查看lambda.min
+min_lambda <- cv_model$lambda.min
+print(min_lambda)
+# 提取系数
+coefficients_min <- coef(cv_model, s = min_lambda)
+print(coefficients_min)
+
+modelL=glm(Group ~ IVF+PCOS+Hypertension+FHBP+MDM+Gravida+Prebmi24+TG_HDL12.5+Age+VT1+Hb1+HbA1C1+FBG1+LDL1+hGDM+Parity
+           ,data=dev,family = binomial())
+modelL.forward=stepAIC(modelL,direction = "both")
+
+summary(modelL)
+vif(modelL)
+
+
+#看模型的OR及95%CI
+exp(cbind(OR=coef(modelL),confint(modelL)))
+
+
+##因子 MDM+Prebmi24+TG_HDL12.5+Hb1+HbA1C1+FBG1+LDL1+hGDM+Parity+Age 
+
+
+
+library(rms)
+devnomo=dev
+
+
+devnomo$hGDM=factor(devnomo$hGDM,levels = c(0,1),labels = c("No","Yes"))
+devnomo$MDM=factor(devnomo$MDM,levels = c(0,1),labels = c("No","Yes"))
+devnomo$TG_HDL12.5=factor(devnomo$TG_HDL12.5,levels = c(0,1),labels = c("No","Yes"))
+devnomo$Prebmi24=factor(devnomo$Prebmi24,levels = c(0,1),labels = c("No","Yes"))
+
+
+# 添加变量标签，用于 nomogram 显示
+label(devnomo$MDM) <- "Family history of maternal diabetes"
+label(devnomo$Prebmi24) <- "PreBMI ≥ 24（kg/m2）"
+label(devnomo$TG_HDL12.5) <- "TG/HDL1 Ratio ≥ 2.5"
+label(devnomo$Hb1) <- "Hb1 (g/L)"
+label(devnomo$HbA1C1) <- "HbA1c1 (%)"
+label(devnomo$FBG1) <- "FBG1 (mmol/L)"
+label(devnomo$hGDM) <- "History of GDM"
+label(devnomo$LDL1) <- "LDL1 (mmol/L)"
+label(devnomo$Age) <- "Age (years)"
+
+dd <- datadist(devnomo)
+options(datadist = "dd")
+
+
+
+#第一种最为简单的列线图
+
+##模型2
+fit5=lrm(Group~Age+Prebmi24+hGDM+MDM+TG_HDL12.5+Hb1+FBG1+HbA1C1+LDL1,data=devnomo)  #拟合模型
+nom2=nomogram(fit5,
+              fun = function(x)1/(1+exp(-x)),
+              lp=F,# 是否显示线性预测值
+              fun.at=seq(0.1, 0.9, by = 0.1),# 概率刻度范围
+              funlabel = "Risk",
+              HbA1C1=seq(3.5, 6.5, by = 0.5),
+              Age=seq(18,48,by=3),
+              FBG1=seq(3,7,by=0.5))
+
+
+plot(nom2,
+     xfrac = 0.45,        # 左侧变量名的比例
+     cex.axis = 0.8,     # 刻度字体大小
+     cex.var = 0.8,      # 变量名字体大小
+     lmgp = 0.2,         # 刻度线长度
+     col.grid = "gray90",
+)
+
+
+#pdf("nomogram.pdf")
+plot(nom2, 
+     lplabel="Risk Stratification",#名字就不改了
+     xfrac = 0.45, # 左侧标签距离坐标轴的距离
+     varname.label = TRUE, 
+     tcl = -0.2, # 刻度长短和方向 
+     lmgp = 0.1, # 坐标轴标签距离坐标轴远近
+     points.label ='Points', 
+     total.points.label = 'Total Points',
+     cap.labels = FALSE,
+     cex.var = 0.7, # 左侧标签字体大小
+     cex.axis = 0.7, # 坐标轴字体大小
+     col.grid = gray(c(0.8, 0.95))) # 竖线颜色
+rect(0.252,0.1,0.686,0.12,col = "green") # 添加彩色条带
+rect(0.686,0.1,0.856,0.12,col = "yellow")
+rect(0.856,0.1,0.997,0.12,col = "red")
+text(0.5,0.14,"Low")
+text(0.77,0.14,"Medium")
+text(0.9,0.14,"High")
+#在底部再增加3个彩色条带，高度错开，显得有层次感
+#rect(0.37,0.14,0.5,0.144,col = "#01847F")
+#rect(0.5,0.144,0.7,0.148,col = "#FBD26A")
+#rect(0.7,0.148,0.835,0.152,col = "#F40002")
+#如果你还要继续添加文字说明也可以，我这里就不加了
+#dev.off()
